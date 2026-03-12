@@ -244,32 +244,15 @@ class MSATransformer(nn.Module):
                 x,
                 need_head_weights=need_head_weights,
             )
-            # if need_head_weights:
-            #     x, col_attn, row_attn = x
-            #     # H x C x B x R x R -> B x H x C x R x R
-            #     col_attn_weights.append(col_attn.permute(2, 0, 1, 3, 4))
-            #     # H x B x C x C -> B x H x C x C
-            #     row_attn_weights.append(row_attn.permute(1, 0, 2, 3))
-            # if (layer_idx + 1) in repr_layers:
-            #     hidden_representations[layer_idx + 1] = x.permute(2, 0, 1, 3)
 
         x = self.emb_layer_norm_after(x)
         x = x.permute(2, 0, 1, 3)  # R x C x B x CH x D -> B x CH X R x C x D
 
-        # last hidden representation should have layer norm applied
         if (layer_idx + 1) in repr_layers:
             hidden_representations[layer_idx + 1] = x
         x = self.lm_head(x)
 
         result = {"logits": x, "representations": hidden_representations}
-        # if need_head_weights:
-        #     # col_attentions: B x L x H x C x R x R
-        #     col_attentions = torch.stack(col_attn_weights, 1)
-        #     # row_attentions: B x L x H x C x C
-        #     row_attentions = torch.stack(row_attn_weights, 1)
-        #     result["col_attentions"] = col_attentions
-        #     result["row_attentions"] = row_attentions
-
         return result
 
     def max_tokens_per_msa_(self, value: int) -> None:

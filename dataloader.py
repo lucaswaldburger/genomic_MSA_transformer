@@ -1,13 +1,15 @@
-from xml.etree.ElementInclude import include
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 import json
-import gpn.mlm
-from transformers import AutoModel, AutoModelForMaskedLM, AutoTokenizer
 
 
 class OperonLoader(Dataset):
+    """Dataset for loading operon MSA data from JSON files indexed by a CSV config.
+
+    Builds multi-channel MSA tensors (orientation, gene_id, position, sequence)
+    with configurable subsampling and data augmentation strategies.
+    """
 
     def __init__(self,
                  config_file,
@@ -22,7 +24,6 @@ class OperonLoader(Dataset):
                  include_position=False,
                  include_sequence=False,
                  max_num_genes=float("inf"),
-                 lang_embedding =False,
                  device="cpu"):
 
         data = pd.read_csv(config_file)
@@ -34,17 +35,14 @@ class OperonLoader(Dataset):
         self.subsample_length = subsample_length
         self.split_key = split_key
         self.device = device
-        self.lang_embedding = lang_embedding
         if max_num_genes % 2 == 0:
             max_num_genes -= 1
         self.max_num_genes = max_num_genes
 
-        # dont do data aug if val or test
-        if self.split_key == "val" or self.split_key == "test":
+        if self.split_key in ("val", "valid", "test"):
             self.subsampling_method = "regular"
             self.shuffle_rows = False
             self.flip_orientation = False
-
         else:
             self.subsampling_method = subsampling_method
             self.shuffle_rows = shuffle_rows
@@ -52,8 +50,8 @@ class OperonLoader(Dataset):
 
         if split_key == "train":
             self.data = data[data["split"] == "train"]
-        elif split_key == "val":
-            self.data = data[data["split"] == "val"]
+        elif split_key in ("val", "valid"):
+            self.data = data[data["split"] == "valid"]
         elif split_key == "test":
             self.data = data[data["split"] == "test"]
         else:
@@ -63,12 +61,8 @@ class OperonLoader(Dataset):
             self.data = self.data[self.data["im_set"] == im_set]
 
         self.num_channels = 4
-
         self.include_position = include_position
         self.include_sequence = include_sequence
-        model_path = "gonzalobenegas/gpn-arabidopsis"
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path).to(self.device)
-        self.embedding_model = AutoModel.from_pretrained(model_path).to(self.device)
 
     def __len__(self):
         return len(self.data)
@@ -87,6 +81,7 @@ class OperonLoader(Dataset):
 
         with open(json_path, "r") as read_file:
             operon_data = json.load(read_file)["result"][0]
+            fids = []
             for idx, genes in enumerate(operon_data):
                 sub_fids = {}
                 count = 1
@@ -144,28 +139,12 @@ class OperonLoader(Dataset):
                                          device=self.device)
 
         if self.include_sequence:
-
-            # TO-DO (Retrieve sequence from metadata)
-            #sequence = 
-            sequence = torch.stack([torch.nn.functional.pad(self.tokenizer(seq, return_tensors="pt", return_attention_mask=False, return_token_type_ids=False)["input_ids"],self.full_sequence_length,'constant',1) for seq in sequence])
-            
-            sequence = sequence.to(device)
-
-
+            raise NotImplementedError("Sequence feature extraction is not yet implemented")
         else:
             sequence_tensor = torch.zeros(1,
                                           self.num_alignments,
                                           self.full_sequence_length,
                                           device=self.device)
-
-        if self.lang_embedding:
-
-            with torch.no_grad():
-                embedding = self.embedding_model(input_ids=sequence).last_hidden_state
-
-            return (operon_msa[0], operon_msa[1], indices_tensor, embedding), torch.tensor(
-            score, device=self.device), torch.tensor(
-                label, device=self.device).unsqueeze(0).double()
 
         # randomly select rows to downsample tensor
         if self.subsampling_method == "random":

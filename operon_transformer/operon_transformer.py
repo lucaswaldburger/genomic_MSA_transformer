@@ -2,8 +2,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from einops import rearrange
-
 from operon_transformer.transformer import MSATransformer
 
 
@@ -55,6 +53,12 @@ class LearnedPositionalEmbedding(nn.Embedding):
 
 
 class operon_transformer(nn.Module):
+    """Unsupervised MSA Transformer for genomic operon representations.
+
+    Processes multi-channel MSA inputs (orientation, gene_id, position, sequence)
+    through independent axial transformers and returns per-channel logits.
+    Can compute a reconstruction loss for self-supervised pretraining.
+    """
 
     def __init__(self,
                  *,
@@ -146,7 +150,7 @@ class operon_transformer(nn.Module):
                 activation_dropout=ff_dropout,
                 max_tokens_per_msa=size,
                 num_tokens=4 + 2,
-                embed_tokens=self.position_emb)
+                embed_tokens=self.sequence_emb)
 
     def forward(self, msa, return_loss=False):
 
@@ -251,6 +255,12 @@ class operon_transformer(nn.Module):
 
 
 class operon_transformer_classifier(nn.Module):
+    """Classifier built on top of the pretrained operon_transformer.
+
+    Freezes the transformer backbone, applies a Conv2d to collapse alignment
+    rows, then a linear layer to produce a scalar prediction scaled by the
+    STRING interaction score.
+    """
 
     def __init__(self,
                  *,
@@ -267,32 +277,27 @@ class operon_transformer_classifier(nn.Module):
                  attn_dropout=0.1,
                  ff_dropout=.1,
                  include_position=False,
-                 include_sequence=False,
-                 lang_model=False):
+                 include_sequence=False):
 
         super(operon_transformer_classifier, self).__init__()
 
-        self.lang_model = lang_model
+        self.model = operon_transformer(depth=depth,
+                                        stable=stable,
+                                        max_num_genes=max_num_genes,
+                                        alignment_length=alignment_length,
+                                        include_position=include_position,
+                                        include_sequence=include_sequence,
+                                        attn_dropout=attn_dropout,
+                                        ff_dropout=ff_dropout)
+        if ckpt_path:
+            self.model.load_state_dict(torch.load(ckpt_path), strict=False)
+        self.model.eval()
 
-        if not lang_model:
-
-            self.model = operon_transformer(depth=depth,
-                                            stable=stable,
-                                            max_num_genes=max_num_genes,
-                                            alignment_length=alignment_length,
-                                            include_position=include_position,
-                                            include_sequence=include_sequence,
-                                            attn_dropout=attn_dropout,
-                                            ff_dropout=ff_dropout)
-            if ckpt_path:
-                self.model.load_state_dict(torch.load(ckpt_path), strict=False)
-            self.model.eval()
-
-            self.num_channels = 2
-            if include_position:
-                self.num_channels += 1
-            if include_sequence:
-                self.num_channels += 1
+        self.num_channels = 2
+        if include_position:
+            self.num_channels += 1
+        if include_sequence:
+            self.num_channels += 1
 
         self.conv2d = nn.Conv2d(in_channels=20,
                                 out_channels=1,
@@ -304,16 +309,12 @@ class operon_transformer_classifier(nn.Module):
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, msa, score):
-
-        if not self.lang_model:
-
-            out = self.model(msa, return_loss=False)
-            out = torch.cat(out[:self.num_channels], dim=1)
-            out = self.conv2d(out)
-            out = torch.flatten(out, start_dim=1)
+        out = self.model(msa, return_loss=False)
+        out = torch.cat(out[:self.num_channels], dim=1)
+        out = self.conv2d(out)
+        out = torch.flatten(out, start_dim=1)
         out = self.linear(out)
         out = self.dropout(out)
         out = self.softmax(out)
         out = out * score
-
         return out

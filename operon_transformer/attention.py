@@ -1,89 +1,7 @@
-from inspect import isfunction
 import math
+
 import torch
-from torch import nn, einsum
-import torch.nn.functional as F
-from einops import rearrange
-
-# helpers
-
-
-def exists(val):
-    return val is not None
-
-
-def default(val, d):
-    if exists(val):
-        return val
-    return d() if isfunction(d) else d
-
-
-def max_neg_value(t):
-    return -torch.finfo(t.dtype).max
-
-
-def stable_softmax(t, dim=-1, alpha=32**2):
-    t = t / alpha
-    t = t - torch.amax(t, dim=dim, keepdim=True)
-    return (t * alpha).softmax(dim=dim)
-
-
-# classes
-
-
-class Attention(nn.Module):
-
-    def __init__(self,
-                 dim,
-                 seq_len,
-                 causal=True,
-                 heads=8,
-                 dim_head=64,
-                 dropout=0.,
-                 stable=False):
-        super().__init__()
-        inner_dim = dim_head * heads
-        self.heads = heads
-        self.seq_len = seq_len
-        self.scale = dim_head**-0.5
-
-        self.stable = stable
-        self.causal = causal
-
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
-        self.to_out = nn.Sequential(nn.Linear(inner_dim, dim),
-                                    nn.Dropout(dropout))
-
-    def forward(self, x, mask=None, rotary_pos_emb=None):
-        b, n, _, h, device = *x.shape, self.heads, x.device
-        softmax = torch.softmax if not self.stable else stable_softmax
-
-        qkv = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=h), qkv)
-
-
-        dots = torch.einsum('b h i d, b h j d -> b h i j', q, k)
-        mask_value = max_neg_value(dots)
-
-        if exists(mask):
-            mask = rearrange(mask, 'b j -> b () () j')
-            dots.masked_fill_(~mask, mask_value)
-            del mask
-
-        if self.causal:
-            i, j = dots.shape[-2:]
-            mask = torch.ones(i, j, device=device).triu_(j - i + 1).bool()
-            dots.masked_fill_(mask, mask_value)
-
-        attn = softmax(dots, dim=-1)
-
-        out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
-        out = self.to_out(out)
-        return out
-
-
-# sparse axial causal attention
+from torch import nn
 
 
 class RowSelfAttention(nn.Module):
@@ -321,7 +239,6 @@ class ColumnSelfAttention(nn.Module):
         self_attn_padding_mask=None,
     ):
         num_rows, num_cols, batch_size, embed_dim = x.size()
-        # if False and num_rows * num_cols > 2 ** 14 and not torch.is_grad_enabled():
         if (num_rows * num_cols
             ) > self.max_tokens_per_msa and not torch.is_grad_enabled():
             return self._batched_forward(
